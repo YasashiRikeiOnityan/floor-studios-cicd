@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "HOSTING TEMPLATE"
+
+Parameters:
+  # プロジェクト名
+  ProjectName:
+    Type: String
+    Default: floor-studios
+  # プロジェクトタイプ
+  ProjectType:
+    Type: String
+    Default: gui
+  # 環境名
+  Environment:
+    Type: String
+    Default: main
+  # 事前にコンソールから購入したドメイン名
+  DomainName:
+    Type: String
+    Default: floor-studios.com
+  # 事前に発行した証明書ID
+  # 別リージョンで作成しているのでやむなくコンソールから取得
+  # 関連付けるやりようはありそうだが，少々手間がかかりそうなので一旦このまま
+  CertificateId:
+    Type: String
+    Default: efc24b5c-3448-461f-9bcf-607ace64441a
+  # ホストゾーンID
+  HostedZoneId:
+    Type: String
+    Default: Z00033452JLLJGRAM0F3Y
+
+Resources:
+  # S3バケットポリシー設定
+  BucketPolicyGUIWeb:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      # S3バケット名
+      # CICDで作成時にエクスポートしたバケット名をインポートする
+      Bucket:
+        Fn::ImportValue:
+          !Sub bucket-${ProjectName}-${ProjectType}-${Environment}-web
+      # CloudFront用バケットポリシー
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource:
+              Fn::ImportValue:
+                !Sub objects-arn-${ProjectName}-${ProjectType}-${Environment}-web
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+  # CloudFrontOAI設定
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub oac-${ProjectName}-${ProjectType}-${Environment}
+        Description: "Access to S3 bucket for CloudFront"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  # CloudFront設定
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        # ドメイン
+        Aliases:
+          - !Sub ${Environment}.${DomainName}
+        Origins:
+          - DomainName:
+              Fn::ImportValue:
+                !Sub domain-name-${ProjectName}-${ProjectType}-${Environment}-web
+            # オリジンの識別子(CloudFront内で一意であればよい)
+            Id: !Sub origin-id-${ProjectName}-${ProjectType}-${Environment}-web
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+            # オリジンアクセスアイデンティティ
+            S3OriginConfig: {}
+        # キャッシュビヘイビア設定
+        DefaultCacheBehavior:
+          # 上のオリジンIDを指定する
+          TargetOriginId: !Sub origin-id-${ProjectName}-${ProjectType}-${Environment}-web
+          # 自動圧縮有無
+          Compress: true
+          # HTTPメソッド
+          AllowedMethods:
+            - HEAD
+            - GET
+          CachedMethods:
+            - HEAD
+            - GET
+          # ビューアプロトコルポリシー
+          ViewerProtocolPolicy: redirect-to-https
+          # キャッシュポリシー (CachingOptimized)
+          # https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt CloudFrontFunction.FunctionARN
+        # SPA対応設定
+        # 必要があれば他のエラーコードを追加していく
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponsePagePath: /404.html
+            ResponseCode: 200
+            ErrorCachingMinTTL: 0
+        # 料金クラス
+        # エッジロケーションの範囲を指定する
+        PriceClass: PriceClass_100
+        # ディストリビューション有効無効
+        Enabled: true
+        # SSL証明書設定
+        ViewerCertificate:
+          # 証明書ID
+          # バージニア北部リージョン
+          AcmCertificateArn: !Sub arn:${AWS::Partition}:acm:us-east-1:${AWS::AccountId}:certificate/${CertificateId}
+          # セキュリティポリシー
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+        # 配信制限設定
+        Restrictions:
+          GeoRestriction:
+            # 地理的制限
+            RestrictionType: none
+        # HTTPバージョン
+        HttpVersion: http2
+        # ルートURL
+        DefaultRootObject: index.html
+        # IPv6有無
+        IPV6Enabled: true
+  CloudFrontFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      FunctionCode: |
+        async function handler(event) {
+            const request = event.request;
+            const uri = request.uri;
+
+            // Check whether the URI is missing a file name.
+            if (uri.endsWith('/')) {
+                request.uri += 'index.html';
+            } 
+            // Check whether the URI is missing a file extension.
+            else if (!uri.includes('.')) {
+                request.uri += '/index.html';
+            }
+
+            return request;
+        }
+      FunctionConfig:
+        Comment: "A function to rewrite URIs"
+        Runtime: cloudfront-js-2.0
+      # 自動で関数の発行する
+      AutoPublish: true
+      Name: !Sub cloudfront-function-${ProjectName}-${ProjectType}-${Environment}-rewrite-uri
+  # Route53レコード設定
+  Route53RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      # ドメイン名
+      Name: !Sub ${Environment}.${DomainName}
+      # ホストゾーンID
+      HostedZoneId: !Ref HostedZoneId
+      # レコードタイプ
+      Type: A
+      # エイリアスターゲット
+      AliasTarget:
+        # CloudFrontドメイン
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        # ホストゾーンID (固定)
+        # https://docs.aws.amazon.com/ja_jp/AWSCloudFormation/latest/UserGuide/aws-properties-route53-recordset-aliastarget.html#cfn-route53-recordset-aliastarget-hostedzoneid
+        HostedZoneId: Z2FDTNDATAQYW2

@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "GRAPHICAL USER INTERFACE CICD TEMPLATE"
+
+Parameters:
+  # プロジェクト名
+  ProjectName:
+    Type: String
+    Default: floor-studios
+  # プロジェクトタイプ
+  ProjectType:
+    Type: String
+    Default: gui
+  # 環境名
+  Environment:
+    Type: String
+    Default: main
+  # GitHubリポジトリ名
+  Repository:
+    Type: String
+    Default: YasashiRikeiOnityan/floor-studios-gui
+  # ドメイン名
+  DomainName:
+    Type: String
+    Default: floor-studios.com
+
+Resources:
+  # CodePipelineに付与するIAMロール
+  RoleCodePipeline:
+    Type: AWS::IAM::Role
+    Properties:
+      # 許可を受けた第三者であることを明示
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              # IAMロールを「引き受ける」ためのアクション
+              # IAMロール使用時に実行される
+              # sts : Security Token Service (AWSサービスへのアクセスに使用できる一時的な限定権限認証情報を提供するサービス)
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub policy-${ProjectName}-${ProjectType}-${Environment}-pipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  # S3からアーティファクトを取得する
+                  - s3:GetObject
+                  # S3にアーティファクトやビルド成果物を保存する
+                  - s3:PutObject
+                  # オブジェクト一覧を閲覧する
+                  - s3:ListBucket
+                Resource:
+                  # バケット自体のARN : ListBucketアクションで使用する
+                  - !GetAtt BucketGUIArtifacts.Arn
+                  # バケット内のすべてのオブジェクトを対象とするARN
+                  # GetObject, PutObjectアクションで使用する
+                  - !Sub arn:${AWS::Partition}:s3:::${BucketGUIWeb}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${BucketGUIArtifacts}/*
+              - Effect: Allow
+                Action:
+                  # ビルドの詳細情報を一括で取得する
+                  - codebuild:BatchGetBuilds
+                  # ビルドを開始する
+                  - codebuild:StartBuild
+                Resource: !GetAtt BuildGUI.Arn
+              - Effect: Allow
+                Action:
+                  # GitHubとの接続を使用する
+                  # CodeStarはサービス終了しているが，codeconnectionsを使うと失敗した...
+                  - codestar-connections:UseConnection
+                # コンソールから先に接続を完了させておく必要がある
+                # 接続するためのテンプレートでARNを出力しているのでインポートする
+                Resource:
+                  Fn::ImportValue:
+                    !Sub arn-${ProjectName}-github-connection
+      RoleName: !Sub role-${ProjectName}-${ProjectType}-${Environment}-pipeline
+  # CodeBuildに付与するIAMロール
+  RoleCodeBuild:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub policy-${ProjectName}-${ProjectType}-${Environment}-build
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  # S3にビルドアーティファクトを保存する
+                  - s3:PutObject
+                  # S3からソースアーティファクトを取得する
+                  - s3:GetObject
+                  # オブジェクト一覧を閲覧する
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BucketGUIArtifacts.Arn
+                  - !Sub arn:${AWS::Partition}:s3:::${BucketGUIArtifacts}/*
+              - Effect: Allow
+                Action:
+                  # ロググループを作成する
+                  - logs:CreateLogGroup
+                  # ログストリームを作成する
+                  - logs:CreateLogStream
+                  # ログを出力する
+                  - logs:PutLogEvents
+                Resource: !GetAtt LogGroupGUIBuild.Arn
+      RoleName: !Sub role-${ProjectName}-${ProjectType}-${Environment}-build
+  # 入力・出力アーティファクトを格納するS3バケット
+  BucketGUIArtifacts:
+    Type: AWS::S3::Bucket
+    Properties:
+      # バケット名は世界中で一意である必要がある
+      BucketName: !Sub bucket-${ProjectName}-${ProjectType}-${Environment}-artifacts
+  # ビルド成果物をデプロイするS3バケット
+  BucketGUIWeb:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bucket-${ProjectName}-${ProjectType}-${Environment}-web
+      # OAC専用にする
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  # CloudWatchロググループを定義
+  LogGroupGUIBuild:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub loggroup-${ProjectName}-${ProjectType}-${Environment}-build
+      RetentionInDays: 7
+    # スタック削除時にロググループを削除する
+    DeletionPolicy: Delete
+    # リソースの更新や置換時にロググループを保持する
+    UpdateReplacePolicy: Retain
+  # CodeBuildプロジェクト
+  BuildGUI:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub build-${ProjectName}-${ProjectType}-${Environment}
+      Source:
+        Type: CODEPIPELINE
+        # ビルド時のコマンドをまとめたファイル
+        # プロジェクト内に作っておく
+        BuildSpec: buildspec.yaml
+      Artifacts:
+        Type: CODEPIPELINE
+      # Lambdaコンピューティングイメージはこちら
+      # https://GUI.aws.amazon.com/ja_jp/codebuild/latest/userguide/lambda-compute-images.html
+      Environment:
+        ComputeType: BUILD_LAMBDA_1GB
+        Image: aws/codebuild/amazonlinux-x86_64-lambda-standard:nodejs20
+        Type: LINUX_LAMBDA_CONTAINER
+        EnvironmentVariables:
+          - Name: NEXT_PUBLIC_COGNITO_USER_POOL_ID
+            Type: PLAINTEXT
+            Value: ap-northeast-1_VYl0ZnBDX
+          - Name: NEXT_PUBLIC_COGNITO_CLIENT_ID
+            Type: PLAINTEXT
+            Value: 4n1tfvtulg2bbi1dagb1642rnt
+          - Name: NEXT_PUBLIC_API_URL
+            Type: PLAINTEXT
+            Value: !Sub https://${Environment}.api.${DomainName}
+      ServiceRole: !GetAtt RoleCodeBuild.Arn
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref LogGroupGUIBuild
+  # CodePipelineの定義
+  PipelineGUI:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub pipeline-${ProjectName}-${ProjectType}-${Environment}
+      PipelineType: V2
+      ExecutionMode: QUEUED
+      ArtifactStore:
+        Type: S3
+        Location: !Ref BucketGUIArtifacts
+      RoleArn: !GetAtt RoleCodePipeline.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              # CodeConnecctionsはまだ対応されていない模様
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                # 事前にコンソールから確立した接続
+                ConnectionArn:
+                  Fn::ImportValue:
+                    !Sub arn-${ProjectName}-github-connection
+                FullRepositoryId: !Ref Repository
+                BranchName: !Ref Environment
+                # GitHubでの変更を自動的に検出する
+                DetectChanges: true
+                OutputArtifactFormat: CODE_ZIP
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref BuildGUI
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                BucketName: !Ref BucketGUIWeb
+                # アップロード前にZIPからファイルを抽出する
+                Extract: true
+
+Outputs:
+  # BucketGUIWebにOACをアタッチするために使用する
+  # バケット名
+  BucketGUIWebBucketName:
+    Value: !Ref BucketGUIWeb
+    Export:
+      Name: !Sub bucket-${ProjectName}-${ProjectType}-${Environment}-web
+  # バケット配下すべてを指すARN
+  BucketGUIWebObjectsArn:
+    Value: !Sub arn:${AWS::Partition}:s3:::${BucketGUIWeb}/*
+    Export:
+      Name: !Sub objects-arn-${ProjectName}-${ProjectType}-${Environment}-web
+  # バケットのドメイン名
+  BucketGUIWebDomainName:
+    Value: !GetAtt BucketGUIWeb.DomainName
+    Export:
+      Name: !Sub domain-name-${ProjectName}-${ProjectType}-${Environment}-web

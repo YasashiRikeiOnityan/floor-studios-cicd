@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "CERTIFICATE CREATION TEMPLATE"
+
+Parameters:
+  # 事前にコンソールから購入したドメイン名
+  DomainName:
+    Type: String
+    Default: floor-studios.com
+  # ホストゾーンID
+  # リージョンが異なるため直接指定している
+  HostedZoneId:
+    Type: String
+    Default: Z00033452JLLJGRAM0F3Y
+
+Resources:
+  UnifiedCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      # メインのドメイン名
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames:
+        - !Sub "*.${DomainName}"
+        - !Sub "*.api.${DomainName}"
+        - !Sub "*.docs.${DomainName}"
+      # 検証ドメイン設定
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+        - DomainName: !Sub "*.api.${DomainName}"
+          HostedZoneId: !Ref HostedZoneId
+        - DomainName: !Sub "*.docs.${DomainName}"
+          HostedZoneId: !Ref HostedZoneId
+      # 鍵アルゴリズム
+      KeyAlgorithm: RSA_2048
+      # 検証方法
+      ValidationMethod: DNS
+      # 証明書の透明性ログ
+      CertificateTransparencyLoggingPreference: ENABLED

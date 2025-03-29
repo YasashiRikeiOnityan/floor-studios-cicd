@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "GITHUB CONNECTION TEMPLATE"
+
+Parameters:
+  # プロジェクト名
+  ProjectName:
+    Type: String
+    Default: floor-studios
+
+Resources:
+  GitHubConnection:
+    Type: AWS::CodeConnections::Connection
+    Properties:
+      # ブランチは関係ないのでEnvironmentは付けない
+      ConnectionName: !Sub ${ProjectName}-github-connection
+      ProviderType: GitHub
+
+Outputs:
+  # CodePipilineのSourceステージで使用する
+  GitHubConnectionArn:
+    Description: "Used in the Source Stage of CodePipeline."
+    Value: !GetAtt GitHubConnection.ConnectionArn
+    Export:
+      Name: !Sub arn-${ProjectName}-github-connection
