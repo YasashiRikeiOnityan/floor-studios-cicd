@@ -23,6 +23,10 @@ Parameters:
   DomainName:
     Type: String
     Default: floor-studios.com
+  # CloudFrontのディストリビューションID
+  CloudFrontDistributionId:
+    Type: String
+    Default: E3SBH74A357557
 
 Resources:
   # CodePipelineに付与するIAMロール
@@ -79,6 +83,10 @@ Resources:
                 Resource:
                   Fn::ImportValue:
                     !Sub arn-${ProjectName}-github-connection
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt CacheInvalidationFunction.Arn
       RoleName: !Sub role-${ProjectName}-${ProjectType}-${Environment}-pipeline
   # CodeBuildに付与するIAMロール
   RoleCodeBuild:
@@ -167,13 +175,13 @@ Resources:
         EnvironmentVariables:
           - Name: NEXT_PUBLIC_COGNITO_USER_POOL_ID
             Type: PLAINTEXT
-            Value: ap-northeast-1_VYl0ZnBDX
+            Value: ap-northeast-1_yHwakV9ah
           - Name: NEXT_PUBLIC_COGNITO_CLIENT_ID
             Type: PLAINTEXT
-            Value: 4n1tfvtulg2bbi1dagb1642rnt
-          - Name: NEXT_PUBLIC_API_URL
+            Value: qtgrd762au4142ddv4iho181b
+          - Name: NEXT_PUBLIC_API_BASE_URL
             Type: PLAINTEXT
-            Value: !Sub https://${Environment}.api.${DomainName}
+            Value: !Sub https://${Environment}.api.${DomainName}/v1
       ServiceRole: !GetAtt RoleCodeBuild.Arn
       LogsConfig:
         CloudWatchLogs:
@@ -240,6 +248,61 @@ Resources:
                 BucketName: !Ref BucketGUIWeb
                 # アップロード前にZIPからファイルを抽出する
                 Extract: true
+        - Name: CacheInvalidation
+          Actions:
+            - Name: CacheInvalidationAction
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: "1"
+              Configuration:
+                FunctionName: !Ref CacheInvalidationFunction
+                UserParameters: "{}"
+  # Lambda関数のIAMロール
+  CacheInvalidationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub policy-${ProjectName}-${ProjectType}-${Environment}-cache-invalidation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+              - Effect: Allow
+                Action:
+                  - codepipeline:PutJobSuccessResult
+                  - codepipeline:PutJobFailureResult
+                # 循環参照を防ぐために直接指定
+                Resource: !Sub arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:pipeline-${ProjectName}-${ProjectType}-${Environment}
+      RoleName: !Sub role-${ProjectName}-${ProjectType}-${Environment}-cache-invalidation
+  # キャッシュ削除用Lambda関数
+  # 事前にS3にzipをアップロードしておく
+  CacheInvalidationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub function-${ProjectName}-${ProjectType}-${Environment}-cache-invalidation
+      Handler: app.lambda_handler
+      Role: !GetAtt CacheInvalidationFunctionRole.Arn
+      Runtime: python3.13
+      Code:
+        S3Bucket: !Sub bucket-${ProjectName}-templates
+        S3Key: !Sub ${ProjectType}/${Environment}/cache-invalidation.zip
+      Environment:
+        Variables:
+          DISTRIBUTION_ID: !Ref CloudFrontDistributionId
+      Timeout: 30
+      MemorySize: 128
 
 Outputs:
   # BucketGUIWebにOACをアタッチするために使用する
