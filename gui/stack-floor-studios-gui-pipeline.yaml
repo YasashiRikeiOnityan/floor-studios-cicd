@@ -85,6 +85,7 @@ Resources:
                     !Sub arn-${ProjectName}-github-connection
               - Effect: Allow
                 Action:
+                  # CacheInvalidationFunctionを呼び出す
                   - lambda:InvokeFunction
                 Resource: !GetAtt CacheInvalidationFunction.Arn
       RoleName: !Sub role-${ProjectName}-${ProjectType}-${Environment}-pipeline
@@ -172,7 +173,9 @@ Resources:
         ComputeType: BUILD_LAMBDA_1GB
         Image: aws/codebuild/amazonlinux-x86_64-lambda-standard:nodejs20
         Type: LINUX_LAMBDA_CONTAINER
+        # 環境変数
         EnvironmentVariables:
+          # ここで指定するのは冴えないかな
           - Name: NEXT_PUBLIC_COGNITO_USER_POOL_ID
             Type: PLAINTEXT
             Value: ap-northeast-1_yHwakV9ah
@@ -258,6 +261,7 @@ Resources:
                 Version: "1"
               Configuration:
                 FunctionName: !Ref CacheInvalidationFunction
+                # ディストリビューションIDはLambda関数の環境変数で指定しているのでパラメータは空にしている
                 UserParameters: "{}"
   # Lambda関数のIAMロール
   CacheInvalidationFunctionRole:
@@ -283,11 +287,16 @@ Resources:
                 Action:
                   - codepipeline:PutJobSuccessResult
                   - codepipeline:PutJobFailureResult
-                # 循環参照を防ぐために直接指定
-                Resource: !Sub arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:pipeline-${ProjectName}-${ProjectType}-${Environment}
+                # "*"じゃないとダメみたい...(多分)
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CacheInvalidationLogGroup}:*
       RoleName: !Sub role-${ProjectName}-${ProjectType}-${Environment}-cache-invalidation
   # キャッシュ削除用Lambda関数
-  # 事前にS3にzipをアップロードしておく
   CacheInvalidationFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -295,6 +304,7 @@ Resources:
       Handler: app.lambda_handler
       Role: !GetAtt CacheInvalidationFunctionRole.Arn
       Runtime: python3.13
+      # 事前にS3にzipをアップロードしておく
       Code:
         S3Bucket: !Sub bucket-${ProjectName}-templates
         S3Key: !Sub ${ProjectType}/${Environment}/cache-invalidation.zip
@@ -303,6 +313,19 @@ Resources:
           DISTRIBUTION_ID: !Ref CloudFrontDistributionId
       Timeout: 30
       MemorySize: 128
+      LoggingConfig:
+        ApplicationLogLevel: INFO
+        LogFormat: JSON
+        LogGroup: !Ref CacheInvalidationLogGroup
+        SystemLogLevel: INFO
+  # キャッシュ削除用Lambda関数のロググループ
+  CacheInvalidationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/function-${ProjectName}-${ProjectType}-${Environment}-cache-invalidation
+      RetentionInDays: 7
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
 
 Outputs:
   # BucketGUIWebにOACをアタッチするために使用する
