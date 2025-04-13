@@ -21,13 +21,13 @@ Resources:
       DomainName: !Ref DomainName
       SubjectAlternativeNames:
         - !Sub "*.${DomainName}"
-        - !Sub "*.api.${DomainName}"
+        - !Sub "*.image.${DomainName}"
         - !Sub "*.docs.${DomainName}"
       # 検証ドメイン設定
       DomainValidationOptions:
         - DomainName: !Ref DomainName
           HostedZoneId: !Ref HostedZoneId
-        - DomainName: !Sub "*.api.${DomainName}"
+        - DomainName: !Sub "*.image.${DomainName}"
           HostedZoneId: !Ref HostedZoneId
         - DomainName: !Sub "*.docs.${DomainName}"
           HostedZoneId: !Ref HostedZoneId
